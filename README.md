@@ -1,5 +1,5 @@
-avr-console
-===========
+avr-boschfan
+============
 
 Timer and timebase code for the Atmel ATmega328P.
 
