@@ -1,0 +1,5 @@
+**/.depends
+**/.objects
+avr-boschfan
+avr-boschfan.dump
+librb/librb.a
