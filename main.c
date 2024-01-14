@@ -16,232 +16,243 @@
  */
 #include "project.h"
 
-#include "timer.h"
-#include "tick.h"
-#include "tm1638.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <ctype.h>
 #include <util/atomic.h>
 #include <avr/pgmspace.h>
+#include <util/delay.h>
 
-#define PWM_FREQ    100UL
-
-#define PWM_PERIOD  20000UL
-#define MIN_FAN_RPM 840U
-#define MAX_FAN_RPM 2200U
-#define MIN_PULSE   1900UL
-#define MAX_PULSE   14900UL
+#include "timer.h"
+#include "tick.h"
+#include "tm1638.h"
+#include "bibase.h"
 
 
-//  q = (x >> 3)
-//    - (x >> 16)
-//    + (x >> 19)
-//    - (x >> 22)
-//    + (x >> 25)
-//    - (x >> 28)
-//
-//  r = x - (q * 10)
-//  return q, r
+#define PWM_FREQ    100U
+#define MIN_FAN_RPM 840U  // in RPM
+#define MAX_FAN_RPM 2200U // in RPM
 
-
-/*
- * entry point for command line interpreter
- */
-extern void cmdline(void);
+#define PWM_COUNTS  20000U
+#define MIN_COUNTS  1900UL  // 10%
+#define MAX_COUNTS  14900UL // 75%
 
 /* 840 slow, 2200 fast */
 static uint16_t rpm = 0U;
 
-static uint32_t buttons = 0;
+static uint8_t brightness = TM1638_MAX_BRIGHTNESS / 2;
 
-static uint32_t process_buttons(void)
+static uint32_t keys = 0UL;
+
+static uint32_t process_keys(void)
 {
-    uint32_t const last_buttons = buttons;
+    uint32_t const new_keys = TM1638_get_keys();
+    uint32_t const keys_changed = new_keys ^ keys;
+    keys = new_keys;
 
-    buttons = TM1638_scan_keys();
+    uint32_t keys_down = keys_changed & keys;
+    uint32_t keys_up = keys_changed & ~keys;
 
-    return (last_buttons ^ buttons) & buttons;
+    return keys_down;
 }
 
 
-void setRPM(uint16_t rpm)
+void set_rpm(uint16_t rpm)
 {
-    uint16_t pulse;
+    uint16_t pulse_counts;
 
     if (0U == rpm)
     {
-        pulse = 0U;
+        pulse_counts = 0U;
     }
     else
     {
-        // limit RPM to supported range
-        rpm = limit_range(MIN_FAN_RPM, rpm, MAX_FAN_RPM);
-
-        // interpolate pulse width
-        pulse = (uint16_t) (MIN_PULSE +
-                            (((uint32_t) (rpm - MIN_FAN_RPM) * (uint32_t) (MAX_PULSE - MIN_PULSE)) /
-                             (uint32_t) (MAX_FAN_RPM - MIN_FAN_RPM))
-                           );
+	    /* interpolate pulse width */
+	    pulse_counts = (uint16_t) (MIN_COUNTS + (((uint32_t) (rpm - MIN_FAN_RPM)
+	                               * (uint32_t) (MAX_COUNTS - MIN_COUNTS))
+	                               / (uint32_t) (MAX_FAN_RPM - MIN_FAN_RPM)));
     }
 
-    OCR1B = 19999 - pulse;
+    OCR1A = (PWM_COUNTS - 1) - pulse_counts;
 }
 
 
 static void update_rpm(void)
 {
-    uint16_t pw = rpm;
-
-    /* break up pulse width into decimal digits */
-    uint8_t ones     = pw % 10;
-    pw /= 10;
-    uint8_t tens      = pw % 10;
-    pw /= 10;
-    uint8_t hundreds   = pw % 10;
-    pw /= 10;
-    uint8_t thousands   = pw % 10;
-    pw /= 10;
-    uint8_t tenthousands = pw % 10;
-    pw /= 10;
-
     /* process button pushes */
-    uint8_t changed_buttons = process_buttons();
+    uint32_t changed_buttons = process_keys();
 
-    if (0x08 & changed_buttons)
+#if 0
+    if (0 != changed_buttons)
     {
-        tenthousands = (tenthousands != 0) ? 0 : 1;
+        printf("Button Down: %08lX\n", changed_buttons);
     }
+#endif
 
-    if (0x10 & changed_buttons)
+    if (0x00000004 & changed_buttons)
     {
-        thousands = (thousands + 1) % 10;
-    }
-
-    if (0x20 & changed_buttons)
-    {
-        hundreds = (hundreds + 1) % 10;
+        /* ON */
+        TM1638_enable(1);
     }
 
-    if (0x40 & changed_buttons)
+    if (0x00040000 & changed_buttons)
     {
-        tens = (tens + 1) % 10;
+        /* OFF */
+        TM1638_enable(0);
     }
 
-    if (0x80 & changed_buttons)
+    if (0x40000000 & changed_buttons)
     {
-        ones = (ones + 1) % 10;
+        /* dimmer */
+        if (brightness > 0)
+        {
+            brightness--;
+        }
+
+        TM1638_brightness(brightness);
     }
 
-    /* assemble pulse width from decimal digits */
-    rpm = (tenthousands * 10000)
-        + (thousands  * 1000)
-        + (hundreds * 100)
-        + (tens   * 10)
-        + (ones * 1);
+    if (0x00004000 & changed_buttons)
+    {
+        /* brighter */
+        if (brightness < TM1638_MAX_BRIGHTNESS)
+        {
+            brightness++;
+        }
 
-    if (rpm < 10000)
-    {
-        TM1638_display_digit(3, 10, 0);
-    }
-    else
-    {
-        TM1638_display_digit(3, tenthousands, 0);
+        TM1638_brightness(brightness);
     }
 
-    if (rpm < 1000)
+    uint16_t new_rpm = rpm;
+
+    if      (0x22220000 & changed_buttons)
     {
-        TM1638_display_digit(4, 10, 0);
+        /*
+         * down button pressed
+         */
+
+        if (0x00020000 & changed_buttons)
+        {
+            new_rpm = rpm - 1000;
+        }
+
+        if (0x00200000 & changed_buttons)
+        {
+            new_rpm = rpm - 100;
+        }
+
+        if (0x02000000 & changed_buttons)
+        {
+            new_rpm = rpm - 10;
+        }
+
+        if (0x20000000 & changed_buttons)
+        {
+            new_rpm = rpm - 1;
+        }
+
+        /*
+         * if adjusted RPM is less than minimum or underflowed
+         */
+        if ((new_rpm > rpm) || (new_rpm < MIN_FAN_RPM))
+        {
+            new_rpm = 0;
+        }
     }
-    else
+    else if (0x00002222 & changed_buttons)
     {
-        TM1638_display_digit(4, thousands, 0);
+        /*
+         * up button pressed
+         */
+
+        if (rpm == 0)
+        {
+            new_rpm = MIN_FAN_RPM;
+        }
+        else
+        {
+            if (0x00000002 & changed_buttons)
+            {
+                new_rpm = rpm + 1000;
+            }
+
+            if (0x00000020 & changed_buttons)
+            {
+                new_rpm = rpm + 100;
+            }
+
+            if (0x00000200 & changed_buttons)
+            {
+                new_rpm = rpm + 10;
+            }
+
+            if (0x00002000 & changed_buttons)
+            {
+                new_rpm = rpm + 1;
+            }
+
+            /*
+             * if adjusted RPM is greater than maximum or overflowed
+             */
+            if ((new_rpm < rpm) || (new_rpm > MAX_FAN_RPM))
+            {
+                new_rpm = MAX_FAN_RPM;
+            }
+        }
     }
 
-    if (rpm < 100)
-    {
-        TM1638_display_digit(5, 10, 0);
-    }
-    else
-    {
-        TM1638_display_digit(5, hundreds, 0);
-    }
+    rpm = new_rpm;
 
-    if (rpm < 10)
-    {
-        TM1638_display_digit(6, 10, 0);
-    }
-    else
-    {
-        TM1638_display_digit(6, tens, 0);
-    }
+    uint8_t dec[4] = { 0, 0, 0, 0 };
 
-    TM1638_display_digit(7, ones,   0);
+    uint8_t n_digit = bibase(0, rpm >> 8, dec, 246);
+    n_digit = bibase(n_digit, rpm, dec, 246);
 
-    if (changed_buttons)
-    {
-        printf("RPM: %u\n", rpm);
-    }
+    TM1638_write_digit(3, (n_digit > 3) ? dec[3] : -1);
+    TM1638_write_digit(2, (n_digit > 2) ? dec[2] : -1);
+    TM1638_write_digit(1, (n_digit > 1) ? dec[1] : -1);
+    TM1638_write_digit(0, dec[0]);
 
-    setRPM(rpm);
+    set_rpm(rpm);
 }
 
-uint32_t scan_keys(void);
-
-void main(void)
+void fan_init(void)
 {
-#if 0
-    /*
-     * initialize
-     */
-    ATOMIC_BLOCK(ATOMIC_FORCEON)
-    {
-        timebase_init();
-        tick_init();
-        fan_init();
-    }
-    /* interrupts are enabled */
-#else
-    cli();
-
     /* initialize fan output pin */
     pinmap_clear(FAN_OUT);
     pinmap_dir(0, FAN_OUT);
 
     // Timer 1, Fast PWM mode 14, WGM = 1:1:1:0, clk/8,
-    TCCR1A = 0x32;  // COM1B1 = 1, COM1B0 = 0, WGM11 = 1, WGM10 = 0
+    TCCR1A = 0xC2;  // COM1A1 = 1, COM1A0 = 0, WGM11 = 1, WGM10 = 0
     TCCR1B = 0x1A;  // WGM13 = 1, WGM12 = 1, CS = 2
     TCCR1C = 0x00;
-    ICR1   = 19999;
-    OCR1B  = 9999;
-#endif // 0
+    ICR1 = PWM_COUNTS - 1;
+    OCR1A = PWM_COUNTS - 1;
+}
 
-    TM1638_init(1/*enable*/, 3/*brighness*/);
+
+void main(void)
+{
+    /*
+     * initialize
+     */
+    ATOMIC_BLOCK(ATOMIC_FORCEON)
+    {
+        tbtick_init();
+        tick_init();
+        fan_init();
+    }
+    /* interrupts are enabled */
+
+    /* initialize and enable the TM1638 */
+    TM1638_init(10);
+    TM1638_enable(1);
 
     for (;;)
     {
-        /* read buttons and update rpm */
+        /* read keys and update rpm */
         update_rpm();
-        process_buttons();
-
-//        printf("%08lX\n", TM1638_scan_keys());
-
-        if (pinmap_test(FAN_OUT))
-        {
-            TM1638_display_digit(1, 0, 1);
-        }
-        else
-        {
-            TM1638_display_digit(1, 0, 0);
-        }
-
-//        timer_delay(TBTICKS_FROM_MS(1));
     }
-
-    /*
-     * run command line interface
-     */
-    cmdline();
 }
+

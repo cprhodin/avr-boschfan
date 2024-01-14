@@ -3,7 +3,8 @@
 TARGETS = avr-boschfan avr-boschfan.dump
 
 MANIFEST = Makefile project.h main.c console.h console.c timers.h timers.c     \
-           timer.h timer.c tick.h tick.c tm1638.h tm1638.c pinmap.h
+           timer.h timer.c tick.h tick.c tm1638.h tm1638.c bibase.h bibase.c   \
+           pinmap.h
 
 # libraries
 LIBRARIES = librb/librb.a

@@ -16,48 +16,328 @@
  */
 #include "project.h"
 
+#include <stdio.h>
 #include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/atomic.h>
 #include <avr/pgmspace.h>
 #include <util/delay.h>
+
+#include "timer.h"
 #include "pinmap.h"
 #include "tm1638.h"
 
-#define TM1638_DELAY_US         (2)
 
-// TM1638 commands
-#define TM1638_CMD_SET_DATA     0x40
-#define TM1638_CMD_SET_ADDR     0xC0
-#define TM1638_CMD_SET_DISPLAY  0x80
+#define TM1638_DELAY_US          (1)
 
-// TM1638 data settings (use bitwise OR to contruct complete command)
-#define TM1638_SET_DATA_WRITE   0x00 // write data to the display register
-#define TM1638_SET_DATA_READ    0x02 // read the key scan data
-#define TM1638_SET_DATA_A_ADDR  0x00 // automatic address increment
-#define TM1638_SET_DATA_F_ADDR  0x04 // fixed address
-#define TM1638_SET_DATA_M_NORM  0x00 // normal mode
-#define TM1638_SET_DATA_M_TEST  0x10 // test mode
+/* TM1638 commands                  */
+#define TM1638_CMD_DATA         0x40
+#define TM1638_CMD_ADDRESS      0xC0
+#define TM1638_CMD_DISPLAY      0x80
 
-// TM1638 display control command set (use bitwise OR to consruct complete command)
-#define TM1638_SET_DISPLAY_OFF  0x00 // off
-#define TM1638_SET_DISPLAY_ON   0x08 // on
+/* TM1638 data command bitfields    */
+#define TM1638_DATA_WRITE       0x00
+#define TM1638_DATA_READ        0x02
+#define TM1638_DATA_INCR        0x00
+#define TM1638_DATA_FIXED       0x04
+
+/* TM1638 address command bitfields */
+#define TM1638_ADDRESS_MASK     0x0F
+
+/* TM1638 display command bitfields */
+#define TM1638_DISPLAY_BRIGHT   0x07
+#define TM1638_DISPLAY_ON       0x08
+
+
+/* command identifier */
+#define TM1638_IDLE              (0)
+#define TM1638_WRITE_CONFIG   _BV(0)
+#define TM1638_READ_KEYS      _BV(1)
+#define TM1638_WRITE_SEGMENTS _BV(2)
+
 
 /*
- * Display raw segments at position (0x00..0x07)
+ * segments buffer for LED display
+ */
+static uint8_t segments_buffer[16];
+
+/*
+ * keys buffer for keyboard
+ */
+static uint32_t keys_buffer = 0;
+
+/*
+ * default to display off at 1/2 maximum brightness
+ */
+static uint8_t _config = TM1638_CMD_DISPLAY
+                       | (TM1638_MAX_BRIGHTNESS / 2);
+
+/*
+ * command state variables
+ */
+static uint8_t pending_command = TM1638_IDLE;
+static uint8_t active_command = TM1638_IDLE;
+static uint8_t state;
+static uint8_t * data;
+
+
+static void TM1638_command_dispatch(void)
+{
+    if (!(GPIOR0 & TM1638_EV_BUSY))
+    {
+        /* update pending and active commands */
+        active_command = pending_command & ~(pending_command - 1);
+        pending_command &= ~active_command;
+        state = 0;
+
+        if (TM1638_IDLE != active_command)
+        {
+            GPIOR0 |= TM1638_EV_BUSY;
+
+            _delay_us(TM1638_DELAY_US);
+            TM1638_STB_LOW();
+            _delay_us(TM1638_DELAY_US);
+
+            switch (active_command)
+            {
+            case TM1638_WRITE_CONFIG:
+                /* write the first byte */
+                SPDR = _config;
+                break;
+
+            case TM1638_READ_KEYS:
+                /* write the first byte */
+                SPDR = TM1638_CMD_DATA | TM1638_DATA_READ | TM1638_DATA_INCR;
+
+                /* set the command data */
+                data = (uint8_t *) &keys_buffer;
+                break;
+
+            case TM1638_WRITE_SEGMENTS:
+                /* write the first byte */
+                SPDR = TM1638_CMD_DATA | TM1638_DATA_WRITE | TM1638_DATA_INCR;
+
+                /* set the command data */
+                data = &segments_buffer[0];
+                break;
+            }
+
+            /* enable SPI interrupt */
+            SPCR |= _BV(SPIE);
+        }
+    }
+}
+
+
+ISR(SPI_STC_vect)
+{
+    switch (active_command)
+    {
+    case TM1638_WRITE_CONFIG:
+        GPIOR0 &= ~TM1638_EV_BUSY;
+        break;
+
+    case TM1638_READ_KEYS:
+        if      (0 == state)  /* command state 0 */
+        {
+            pinmap_dir(PINMAP_MOSI, 0);
+            SPDR = 0xFF;
+        }
+        else if (4 > state)   /* command state 1 thru 3 */
+        {
+            *data++ = SPDR;
+            SPDR = 0xFF;
+        }
+        else                  /* command state 4 */
+        {
+            *data++ = SPDR;
+            pinmap_dir(0, PINMAP_MOSI);
+
+            GPIOR0 &= ~TM1638_EV_BUSY;
+        }
+        break;
+
+    case TM1638_WRITE_SEGMENTS:
+        if      (0 == state)  /* command state 0 */
+        {
+            _delay_us(TM1638_DELAY_US);
+            TM1638_STB_HIGH();
+            _delay_us(TM1638_DELAY_US);
+            TM1638_STB_LOW();
+            _delay_us(TM1638_DELAY_US);
+            SPDR = TM1638_CMD_ADDRESS | (0 & TM1638_ADDRESS_MASK);
+        }
+        else if (16 >= state) /* command state 1 thru 16 */
+        {
+            SPDR = *data++;
+        }
+        else                  /* command state 17 */
+        {
+            GPIOR0 &= ~TM1638_EV_BUSY;
+        }
+        break;
+
+    default:
+        GPIOR0 &= ~TM1638_EV_BUSY;
+        break;
+    }
+
+    state++;
+
+    if (!(GPIOR0 & TM1638_EV_BUSY))
+    {
+        _delay_us(TM1638_DELAY_US);
+        TM1638_STB_HIGH();
+
+        SPCR &= ~_BV(SPIE);
+
+        TM1638_command_dispatch();
+    }
+}
+
+
+static void TM1638_write_config(void)
+{
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        pending_command |= TM1638_WRITE_CONFIG;
+        TM1638_command_dispatch();
+    }
+}
+
+void TM1638_read_keys(void)
+{
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        pending_command |= TM1638_READ_KEYS;
+        TM1638_command_dispatch();
+    }
+}
+
+void TM1638_write_segments(void)
+{
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        pending_command |= TM1638_WRITE_SEGMENTS;
+        TM1638_command_dispatch();
+    }
+}
+
+uint32_t TM1638_get_keys(void)
+{
+    return keys_buffer;
+}
+
+void TM1638_enable(uint8_t const enable)
+{
+    _config = (_config & ~TM1638_DISPLAY_ON)
+            | (enable ? TM1638_DISPLAY_ON : 0);
+
+    TM1638_write_config();
+}
+
+void TM1638_brightness(uint8_t const brightness)
+{
+    _config = (_config & ~TM1638_DISPLAY_BRIGHT)
+            | (brightness & TM1638_DISPLAY_BRIGHT);
+
+    TM1638_write_config();
+}
+
+
+/*
+ * timer events for periodic key scanning
+ */
+tbtick_t keys_update_interval;
+
+static int8_t keys_update_handler(struct timer_event * this_timer_event)
+{
+    /* set pending command bit */
+    pending_command |= TM1638_READ_KEYS;
+
+    TM1638_command_dispatch();
+
+    /* advance this timer */
+    this_timer_event->tbtick += keys_update_interval;
+
+    /* reschedule this timer */
+    return 1;
+}
+
+static struct timer_event keys_update_event = {
+    .next = &keys_update_event,
+    .handler = keys_update_handler,
+};
+
+
+void TM1638_init(uint8_t keys_update_ms)
+{
+    /* initialize SPI interface */
+    pinmap_set(PINMAP_MISO | PINMAP_SCK | PINMAP_MOSI | PINMAP_SS);
+    pinmap_dir(PINMAP_MISO, PINMAP_SCK | PINMAP_MOSI | PINMAP_SS);
+
+    /*
+     * LSb first, Master, Data changes on falling edge and latches
+     * on rising edge, CPU clock/32
+     */
+    SPCR = _BV(SPE)  | _BV(DORD) | _BV(MSTR)
+         | _BV(CPOL) | _BV(CPHA) | _BV(SPR1);
+    SPSR = _BV(SPI2X);
+
+    /* initialize variables */
+    GPIOR0 &= ~TM1638_EV_BUSY;
+    pending_command = TM1638_IDLE;
+    active_command = TM1638_IDLE;
+
+    TM1638_write_config();
+
+    for (uint8_t i = 0; i < ARRAY_SIZE(segments_buffer); i++)
+    {
+        segments_buffer[i] = 0x00;
+    }
+
+    TM1638_write_segments();
+
+    keys_update_interval = TBTICKS_FROM_MS(keys_update_ms);
+
+    /*
+     * schedule key scan
+     */
+    if (0 != keys_update_ms)
+    {
+        keys_update_event.tbtick = keys_update_interval;
+        schedule_timer_event(&keys_update_event, NULL);
+    }
+}
+
+
+/*
+ * Display segments
  *
- *      bits:
- *        -0 (a)-
- *       |       |
- *     5 (f)   1 (b)
- *       |       |
- *        -6 (g)-
- *       |       |
- *     4 (e)   2 (c)
- *       |       |
- *        -3 (d)- *7 (dp)
+ *      --a--
+ *     |     |
+ *     f     b
+ *     |     |
+ *      --g--
+ *     |     |
+ *     e     c
+ *     |     |
+ *      --d-- * dp
+ *
+ *   Display Bits
+ *
+ *    a:  _BV(0)
+ *    b:  _BV(1)
+ *    c:  _BV(2)
+ *    d:  _BV(3)
+ *    e:  _BV(4)
+ *    f:  _BV(5)
+ *    g:  _BV(6)
+ *    dp: _BV(7)
  *
  * Example segment configurations:
- * - for character 'H', segments=0b01110110
- * - for character '-', segments=0b01000000
+ * - for character 'H', segments=bcefg, bits=0b01110110
+ * - for character '-', segments=g,     bits=0b01000000
  * - etc.
  */
 static const uint8_t PROGMEM _digit_segments[] =
@@ -80,140 +360,7 @@ static const uint8_t PROGMEM _digit_segments[] =
     0x71, // F
 };
 
-/*
- * segment buffer for LED display
- */
-static uint16_t segment_buffer[8];
-
-/*
- * default to display on at maximum brightness
- */
-static uint8_t _config = TM1638_SET_DISPLAY_ON | TM1638_MAX_BRIGHTNESS;
-
-/*
- * read a long (32 bits) from the TM1638
- */
-static uint32_t
-TM1638_read_long(void)
-{
-    uint32_t value = 0;
-
-    TM1638_DIO_INPUT();
-    TM1638_DIO_HIGH();
-
-    for (uint8_t i = 0; i < 32; i++)
-    {
-        TM1638_CLK_LOW();
-        _delay_us(TM1638_DELAY_US);
-
-        if (TM1638_DIO_READ())
-        {
-            value |= 0x80000000;
-        }
-        value >>= 1;
-
-        TM1638_CLK_HIGH();
-        _delay_us(TM1638_DELAY_US);
-    }
-
-    TM1638_DIO_OUTPUT();
-
-    return value;
-}
-
-/*
- * write bytes to the TM1638
- */
-static void
-TM1638_write_bytes(uint8_t const * bytes, uint8_t num)
-{
-    for (uint8_t n = 0; n < num; n++)
-    {
-        uint8_t byte = *bytes++;
-
-        for (uint8_t i = 0; i < 8; ++i)
-        {
-            TM1638_CLK_LOW();
-            if (byte & 0x01)
-            {
-                TM1638_DIO_HIGH();
-            }
-            else
-            {
-                TM1638_DIO_LOW();
-            }
-            _delay_us(TM1638_DELAY_US);
-
-            TM1638_CLK_HIGH();
-            _delay_us(TM1638_DELAY_US);
-
-            byte >>= 1;
-        }
-    }
-}
-
-static void
-TM1638_write_byte(uint8_t byte)
-{
-    TM1638_write_bytes(&byte, 1);
-}
-
-static void
-TM1638_send_command(const uint8_t command)
-{
-    TM1638_STB_LOW();
-    _delay_us(TM1638_DELAY_US);
-
-    TM1638_write_bytes(&command, 1);
-
-    TM1638_STB_HIGH();
-    _delay_us(TM1638_DELAY_US);
-}
-
-void
-TM1638_send_config(const uint8_t enable, const uint8_t brightness)
-{
-    _config = (enable ? TM1638_SET_DISPLAY_ON : TM1638_SET_DISPLAY_OFF)
-            | (brightness > TM1638_MAX_BRIGHTNESS ? TM1638_MAX_BRIGHTNESS : brightness);
-
-    TM1638_send_command(TM1638_CMD_SET_DISPLAY | _config);
-}
-
-void
-TM1638_enable(const uint8_t enable)
-{
-    TM1638_send_config(enable,
-                       _config & TM1638_MAX_BRIGHTNESS);
-}
-
-void
-TM1638_brightness(const uint8_t brightness)
-{
-    TM1638_send_config(_config & TM1638_SET_DISPLAY_ON,
-                       brightness);
-}
-
-void
-TM1638_write_segments(void)
-{
-    TM1638_send_command(TM1638_CMD_SET_DATA);
-
-    TM1638_STB_LOW();
-    _delay_us(TM1638_DELAY_US);
-
-    TM1638_write_byte(TM1638_CMD_SET_ADDR);
-
-    for (uint8_t i = 0; i < ARRAY_SIZE(segment_buffer); i++)
-    {
-        TM1638_write_bytes((uint8_t *) segment_buffer, 16);
-    }
-
-    TM1638_STB_HIGH();
-    _delay_us(TM1638_DELAY_US);
-}
-
-void
-TM1638_set_digit(uint8_t const digit, int8_t const value)
+void TM1638_write_digit(uint8_t const digit, int8_t const value)
 {
     if (digit <= TM1638_MAX_DIGIT)
     {
@@ -229,54 +376,27 @@ TM1638_set_digit(uint8_t const digit, int8_t const value)
             segments = pgm_read_word(&_digit_segments[value]);
         }
 
-        for (uint8_t i = 0; i < ARRAY_SIZE(segment_buffer); i++)
+        for (uint8_t i = 0; i < ARRAY_SIZE(segments_buffer); i += 2)
         {
+            uint16_t * segment_word = (uint16_t *) &segments_buffer[i];
+
             if (segments & 0x01)
             {
-                segment_buffer[i] |= digit_mask;
+                *segment_word |= digit_mask;
             }
             else
             {
-                segment_buffer[i] &= ~digit_mask;
+                *segment_word &= ~digit_mask;
             }
 
             segments >>= 1;
         }
     }
-}
 
-uint32_t
-TM1638_scan_keys(void)
-{
-    uint32_t keys;
-
-    TM1638_STB_LOW();
-    _delay_us(TM1638_DELAY_US);
-
-    TM1638_write_byte(TM1638_CMD_SET_DATA | TM1638_SET_DATA_READ);
-
-    keys = TM1638_read_long();
-
-    TM1638_STB_HIGH();
-    _delay_us(TM1638_DELAY_US);
-
-    return keys;
-}
-
-void
-TM1638_init(const uint8_t enable, const uint8_t brightness)
-{
-    pinmap_set(TM1638_DIO | TM1638_CLK | TM1638_STB);
-    pinmap_set_ddr(TM1638_DIO | TM1638_CLK | TM1638_STB);
-    _delay_us(TM1638_DELAY_US);
-
-    TM1638_send_config(enable, brightness);
-
-    for (uint8_t i = 0; i < ARRAY_SIZE(segment_buffer); i++)
+    /* schedule segment update */
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
-        segment_buffer[i] = 0x0000;
+        pending_command |= TM1638_WRITE_SEGMENTS;
     }
-
-    TM1638_write_segments();
 }
 

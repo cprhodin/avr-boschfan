@@ -59,19 +59,13 @@
 #define SPEAKER_OUT PINMAP_D4
 
 /* TM1638 pins */
-#define TM1638_STB PINMAP_D11
-#define TM1638_DIO PINMAP_D8
-#define TM1638_CLK PINMAP_D9
+#define TM1638_STB PINMAP_D10
 
-#define TM1638_DIO_HIGH()   pinmap_set(TM1638_DIO)
-#define TM1638_DIO_LOW()    pinmap_clear(TM1638_DIO)
-#define TM1638_DIO_OUTPUT() pinmap_set_ddr(TM1638_DIO)
-#define TM1638_DIO_INPUT()  pinmap_clear_ddr(TM1638_DIO)
-#define TM1638_DIO_READ()   pinmap_test(TM1638_DIO) // (((PINB & _BV(TM1638_DIO_PIN)) > 0) ? 1 : 0)
-#define TM1638_CLK_HIGH()   pinmap_set(TM1638_CLK)
-#define TM1638_CLK_LOW()    pinmap_clear(TM1638_CLK)
 #define TM1638_STB_HIGH()   pinmap_set(TM1638_STB)
 #define TM1638_STB_LOW()    pinmap_clear(TM1638_STB)
+
+/* Fan PWM output */
+#define FAN_OUT PINMAP_OC1A
 
 
 /*
@@ -79,17 +73,19 @@
  */
 #define TBTIMER 0
 
-/*
- * timebase timer prescaler
- */
+/*timebase timer prescaler */
 #define TBTIMER_PRESCALER (256UL)
 
-/*
- * use the A compare
- */
+/* use the A compare */
 #define TBTIMER_COMP A
 
+
 #define TIMER1_PRESCALER (8UL)
+
+
+/* GPIOR0 event bits */
+#define TM1638_EV_BUSY           _BV(GPIOR00)
+
 
 /*
  * initialize console before main
@@ -105,6 +101,5 @@ extern void timers_init(void) __attribute__((__constructor__));
  * these functions never return
  */
 extern void main(void) __attribute__((__noreturn__));
-extern void cmdline(void) __attribute__((__noreturn__));
 
 #endif /* _PROJECT_H_ */
