@@ -19,15 +19,33 @@
 
 #include <stdint.h>
 
-// Main Settings
+#include "spi.h"
+
+#define TM1638_SPCR ( (SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV32)       & 0xFF)
+#define TM1638_SPSR (((SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV32) >> 8) & 0xFF)
+
+/*
+ * Main Settings
+ */
 #define TM1638_MAX_BRIGHTNESS   7
 #define TM1638_MAX_DIGIT        9
 #define TM1638_MAX_VALUE        15
 
 /*
+ * keys buffer for keyboard
+ */
+struct tm1638_keypad
+{
+    uint32_t filter;    // + 0
+    uint32_t last;      // + 4
+    uint32_t up;        // + 8
+    uint32_t down;      // + 12
+};
+
+/*
  * Initialize TM1638 LED controller
  */
-extern void TM1638_init(uint8_t keys_update_ms);
+extern void TM1638_init(uint8_t const keys_update_ms);
 
 /*
  * Configure display
@@ -43,8 +61,9 @@ extern void TM1638_write_segments(void);
 /*
  * Read keys
  */
-extern void TM1638_read_keys(void);
-extern uint32_t TM1638_get_keys(void);
+extern void TM1638_read_keypad(void);
+extern void TM1638_get_keys(struct tm1638_keypad * keys);
+
 
 /*
  * Display digit ('0'..'F')

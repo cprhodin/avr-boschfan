@@ -23,11 +23,24 @@
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 
+#include "spi.h"
 #include "timer.h"
 #include "pinmap.h"
 #include "tm1638.h"
+#include "librb.h"
 
 
+/*
+ * keypad ring-buffer.
+ */
+#ifndef TM1638_KEY_BUF_SIZE
+#define TM1638_KEY_BUF_SIZE (16)
+#endif
+static uint8_t key_buffer[TM1638_KEY_BUF_SIZE];
+static struct ring_buffer tm1638_key_rb;
+
+
+/* strobe delay                     */
 #define TM1638_DELAY_US          (1)
 
 /* TM1638 commands                  */
@@ -52,7 +65,7 @@
 /* command identifier */
 #define TM1638_IDLE              (0)
 #define TM1638_WRITE_CONFIG   _BV(0)
-#define TM1638_READ_KEYS      _BV(1)
+#define TM1638_READ_KEYPAD    _BV(1)
 #define TM1638_WRITE_SEGMENTS _BV(2)
 
 
@@ -62,9 +75,9 @@
 static uint8_t segments_buffer[16];
 
 /*
- * keys buffer for keyboard
+ * keypad state
  */
-static uint32_t keys_buffer = 0;
+static struct tm1638_keypad keypad = { 0 };
 
 /*
  * default to display off at 1/2 maximum brightness
@@ -83,16 +96,16 @@ static uint8_t * data;
 
 static void TM1638_command_dispatch(void)
 {
-    if (!(GPIOR0 & TM1638_EV_BUSY))
+    if (!(GPIOR0 & SPI_EV_BUSY))
     {
         /* update pending and active commands */
-        active_command = pending_command & ~(pending_command - 1);
+        active_command = pending_command & -pending_command;
         pending_command &= ~active_command;
         state = 0;
 
         if (TM1638_IDLE != active_command)
         {
-            GPIOR0 |= TM1638_EV_BUSY;
+            GPIOR0 |= SPI_EV_BUSY;
 
             _delay_us(TM1638_DELAY_US);
             TM1638_STB_LOW();
@@ -105,12 +118,9 @@ static void TM1638_command_dispatch(void)
                 SPDR = _config;
                 break;
 
-            case TM1638_READ_KEYS:
+            case TM1638_READ_KEYPAD:
                 /* write the first byte */
                 SPDR = TM1638_CMD_DATA | TM1638_DATA_READ | TM1638_DATA_INCR;
-
-                /* set the command data */
-                data = (uint8_t *) &keys_buffer;
                 break;
 
             case TM1638_WRITE_SEGMENTS:
@@ -129,15 +139,74 @@ static void TM1638_command_dispatch(void)
 }
 
 
+static void read_keypad(struct tm1638_keypad * const keypad, uint8_t const state)
+{
+    // get pointer into the data structure
+    uint8_t * const data = (uint8_t *) keypad + state - 1;
+
+    // get and filter latest keypad state
+    uint8_t const filter = *data;
+    uint8_t const spdr = SPDR & 0xEE;
+    *data = spdr;
+
+    // unstable keys
+    uint8_t const unstable = spdr ^ filter;
+
+    // update filtered key state
+    uint8_t const old_last = *(data + 4);
+    uint8_t const last = (old_last & unstable) | (filter & ~unstable);
+    *(data + 4) = last;
+
+    // changed keys
+    uint8_t const changed = old_last ^ last;
+
+    // keys changed to up
+    uint8_t const up = (changed & ~last) | *(data + 8);
+
+#ifndef XXX
+    *(data + 8) = up;
+#else
+    uint8_t const key_up = up & -up;
+
+    *(data + 8) = up & ~key_up;
+
+    key_up--;
+    key_up -= ((key_up >> 1) & 0x55);
+    key_up  = ((key_up >> 2) & 0x33) + (key_up & 0x33);
+    key_up  = (__builtin_avr_swap(key_up) + key_up) & 0x07;
+
+    rb_put(&tm1638_key_rb, (uint8_t *) &key_up);
+#endif
+
+    // keys changed to down
+    uint8_t const down = (changed & last) | *(data + 12);
+
+#ifndef XXX
+    *(data + 12) = down;
+#else
+    uint8_t const key_down = down & -down;
+
+    *(data + 12) = down & ~key_down;
+
+    key_down--;
+    key_down -= ((key_down >> 1) & 0x55);
+    key_down  = ((key_down >> 2) & 0x33) + (key_down & 0x33);
+    key_down  = (__builtin_avr_swap(key_down) + key_down) & 0x07;
+
+    rb_put(&tm1638_key_rb, (uint8_t *) &key_down);
+#endif
+}
+
+
 ISR(SPI_STC_vect)
 {
     switch (active_command)
     {
     case TM1638_WRITE_CONFIG:
-        GPIOR0 &= ~TM1638_EV_BUSY;
+        GPIOR0 &= ~SPI_EV_BUSY;
         break;
 
-    case TM1638_READ_KEYS:
+    case TM1638_READ_KEYPAD:
         if      (0 == state)  /* command state 0 */
         {
             pinmap_dir(PINMAP_MOSI, 0);
@@ -145,15 +214,15 @@ ISR(SPI_STC_vect)
         }
         else if (4 > state)   /* command state 1 thru 3 */
         {
-            *data++ = SPDR;
+            read_keypad(&keypad, state);
             SPDR = 0xFF;
         }
         else                  /* command state 4 */
         {
-            *data++ = SPDR;
+            read_keypad(&keypad, state);
             pinmap_dir(0, PINMAP_MOSI);
 
-            GPIOR0 &= ~TM1638_EV_BUSY;
+            GPIOR0 &= ~SPI_EV_BUSY;
         }
         break;
 
@@ -166,6 +235,9 @@ ISR(SPI_STC_vect)
             TM1638_STB_LOW();
             _delay_us(TM1638_DELAY_US);
             SPDR = TM1638_CMD_ADDRESS | (0 & TM1638_ADDRESS_MASK);
+
+            /* set the command data */
+            data = &segments_buffer[0];
         }
         else if (16 >= state) /* command state 1 thru 16 */
         {
@@ -173,18 +245,18 @@ ISR(SPI_STC_vect)
         }
         else                  /* command state 17 */
         {
-            GPIOR0 &= ~TM1638_EV_BUSY;
+            GPIOR0 &= ~SPI_EV_BUSY;
         }
         break;
 
     default:
-        GPIOR0 &= ~TM1638_EV_BUSY;
+        GPIOR0 &= ~SPI_EV_BUSY;
         break;
     }
 
     state++;
 
-    if (!(GPIOR0 & TM1638_EV_BUSY))
+    if (!(GPIOR0 & SPI_EV_BUSY))
     {
         _delay_us(TM1638_DELAY_US);
         TM1638_STB_HIGH();
@@ -205,11 +277,11 @@ static void TM1638_write_config(void)
     }
 }
 
-void TM1638_read_keys(void)
+void TM1638_read_keypad(void)
 {
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
     {
-        pending_command |= TM1638_READ_KEYS;
+        pending_command |= TM1638_READ_KEYPAD;
         TM1638_command_dispatch();
     }
 }
@@ -223,9 +295,24 @@ void TM1638_write_segments(void)
     }
 }
 
-uint32_t TM1638_get_keys(void)
+/*
+      00 01 10 11
+    -  0  0  1  1
+      00 01 01 10
+
+    a -= ((a >> 1) & 0x55);                 // 4 2-bit fields 0-2
+    a  = ((a >> 2) & 0x33) + (a & 0x33);    // 2 4-bit fileds 0-4
+    a  = (__builtin_avr_swap(a) + a) & 0x07;// 1 4-bit fields 0-8
+*/
+
+void TM1638_get_keys(struct tm1638_keypad * keys)
 {
-    return keys_buffer;
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        *keys = keypad;
+        keypad.up = 0;
+        keypad.down = 0;
+    }
 }
 
 void TM1638_enable(uint8_t const enable)
@@ -253,7 +340,7 @@ tbtick_t keys_update_interval;
 static int8_t keys_update_handler(struct timer_event * this_timer_event)
 {
     /* set pending command bit */
-    pending_command |= TM1638_READ_KEYS;
+    pending_command |= TM1638_READ_KEYPAD;
 
     TM1638_command_dispatch();
 
@@ -270,7 +357,7 @@ static struct timer_event keys_update_event = {
 };
 
 
-void TM1638_init(uint8_t keys_update_ms)
+void TM1638_init(uint8_t const keys_update_ms)
 {
     /* initialize SPI interface */
     pinmap_set(PINMAP_MISO | PINMAP_SCK | PINMAP_MOSI | PINMAP_SS | TM1638_STB);
@@ -280,12 +367,11 @@ void TM1638_init(uint8_t keys_update_ms)
      * LSb first, Master, Data changes on falling edge and latches
      * on rising edge, CPU clock/32
      */
-    SPCR = _BV(SPE)  | _BV(DORD) | _BV(MSTR)
-         | _BV(CPOL) | _BV(CPHA) | _BV(SPR1);
-    SPSR = _BV(SPI2X);
+    SPCR = TM1638_SPCR;
+    SPSR = TM1638_SPSR;
 
     /* initialize variables */
-    GPIOR0 &= ~TM1638_EV_BUSY;
+    GPIOR0 &= ~SPI_EV_BUSY;
     pending_command = TM1638_IDLE;
     active_command = TM1638_IDLE;
 

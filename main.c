@@ -29,33 +29,23 @@
 #include "tm1638.h"
 #include "bibase.h"
 
+#define BUILD_DATE __DATE__ ", " __TIME__
 
-#define PWM_FREQ    100U
+#define PWM_FREQ    100U  // in Hertz
 #define MIN_FAN_RPM 840U  // in RPM
 #define MAX_FAN_RPM 2200U // in RPM
 
-#define PWM_COUNTS  20000U
+#define PWM_COUNTS  20000U  // 100 Hertz at 20000 timer clock
 #define MIN_COUNTS  1900UL  // 10%
 #define MAX_COUNTS  14900UL // 75%
 
 /* 840 slow, 2200 fast */
-static uint16_t rpm = 0U;
+static uint16_t rpm = MAX_FAN_RPM;
 
 static uint8_t brightness = TM1638_MAX_BRIGHTNESS / 2;
 
-static uint32_t keys = 0UL;
 
-static uint32_t process_keys(void)
-{
-    uint32_t const new_keys = TM1638_get_keys();
-    uint32_t const keys_changed = new_keys ^ keys;
-    keys = new_keys;
-
-    uint32_t keys_down = keys_changed & keys;
-    uint32_t keys_up = keys_changed & ~keys;
-
-    return keys_down;
-}
+static struct tm1638_keypad keys = { 0 };
 
 
 void set_rpm(uint16_t rpm)
@@ -68,6 +58,16 @@ void set_rpm(uint16_t rpm)
     }
     else
     {
+        /* limit RPM to supported range */
+        if      (rpm < MIN_FAN_RPM)
+        {
+            rpm = MIN_FAN_RPM;
+        }
+        else if (rpm > MAX_FAN_RPM)
+        {
+            rpm = MAX_FAN_RPM;
+        }
+
 	    /* interpolate pulse width */
 	    pulse_counts = (uint16_t) (MIN_COUNTS + (((uint32_t) (rpm - MIN_FAN_RPM)
 	                               * (uint32_t) (MAX_COUNTS - MIN_COUNTS))
@@ -81,7 +81,8 @@ void set_rpm(uint16_t rpm)
 static void update_rpm(void)
 {
     /* process button pushes */
-    uint32_t changed_buttons = process_keys();
+    TM1638_get_keys(&keys);
+    uint32_t changed_buttons = keys.down;
 
 #if 0
     if (0 != changed_buttons)
@@ -126,7 +127,7 @@ static void update_rpm(void)
 
     uint16_t new_rpm = rpm;
 
-    if      (0x22220000 & changed_buttons)
+    if     (0x22220000 & changed_buttons)
     {
         /*
          * down button pressed
@@ -244,6 +245,10 @@ void main(void)
         fan_init();
     }
     /* interrupts are enabled */
+
+    printf("\033[2J\033[H");
+    printf("avr-boschfan, Bosch radiator fan controller.\n");
+    printf("Build date: " BUILD_DATE "\n\n");
 
     /* initialize and enable the TM1638 */
     TM1638_init(10);

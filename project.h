@@ -59,7 +59,7 @@
 #define SPEAKER_OUT PINMAP_D4
 
 /* TM1638 pins */
-#define TM1638_STB PINMAP_D2
+#define TM1638_STB PINMAP_D6
 
 #define TM1638_STB_HIGH()   pinmap_set(TM1638_STB)
 #define TM1638_STB_LOW()    pinmap_clear(TM1638_STB)
@@ -84,7 +84,7 @@
 
 
 /* GPIOR0 event bits */
-#define TM1638_EV_BUSY           _BV(GPIOR00)
+#define SPI_EV_BUSY           _BV(GPIOR00)
 
 
 /*
