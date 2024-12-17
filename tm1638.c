@@ -29,7 +29,6 @@
 #include "tm1638.h"
 #include "librb.h"
 
-
 /*
  * keypad ring-buffer.
  */
@@ -141,10 +140,13 @@ static void TM1638_command_dispatch(void)
 
 static void read_keypad(struct tm1638_keypad * const keypad, uint8_t const state)
 {
-    // get pointer into the data structure
-    uint8_t * const data = (uint8_t *) keypad + state - 1;
+    /* translate state into index*/
+    uint8_t const index = state - 1;
 
-    // get and filter latest keypad state
+    // get pointer into the data structure
+    uint8_t * const data = (uint8_t *) keypad + index;
+
+    // get and filter latest keypad
     uint8_t const filter = *data;
     uint8_t const spdr = SPDR & 0xEE;
     *data = spdr;
@@ -152,7 +154,7 @@ static void read_keypad(struct tm1638_keypad * const keypad, uint8_t const state
     // unstable keys
     uint8_t const unstable = spdr ^ filter;
 
-    // update filtered key state
+    // update filtered key
     uint8_t const old_last = *(data + 4);
     uint8_t const last = (old_last & unstable) | (filter & ~unstable);
     *(data + 4) = last;
@@ -166,16 +168,21 @@ static void read_keypad(struct tm1638_keypad * const keypad, uint8_t const state
 #ifndef XXX
     *(data + 8) = up;
 #else
-    uint8_t const key_up = up & -up;
+    uint8_t key_up = up & -up;
 
-    *(data + 8) = up & ~key_up;
+    if (0 != key_up)
+    {
+        *(data + 8) = up & ~key_up;
 
-    key_up--;
-    key_up -= ((key_up >> 1) & 0x55);
-    key_up  = ((key_up >> 2) & 0x33) + (key_up & 0x33);
-    key_up  = (__builtin_avr_swap(key_up) + key_up) & 0x07;
+        key_up--;
+        key_up -= ((key_up >> 1) & 0x55);
+        key_up  = ((key_up >> 2) & 0x33) + (key_up & 0x33);
+        key_up  = (__builtin_avr_swap(key_up) + key_up) & 0x07;
 
-    rb_put(&tm1638_key_rb, (uint8_t *) &key_up);
+        key_up += (index << 4) + 0x80;
+
+        rb_put(&tm1638_key_rb, (uint8_t *) &key_up);
+    }
 #endif
 
     // keys changed to down
@@ -184,16 +191,21 @@ static void read_keypad(struct tm1638_keypad * const keypad, uint8_t const state
 #ifndef XXX
     *(data + 12) = down;
 #else
-    uint8_t const key_down = down & -down;
+    uint8_t key_down = down & -down;
 
-    *(data + 12) = down & ~key_down;
+    if (0 != key_down)
+    {
+        *(data + 12) = down & ~key_down;
 
-    key_down--;
-    key_down -= ((key_down >> 1) & 0x55);
-    key_down  = ((key_down >> 2) & 0x33) + (key_down & 0x33);
-    key_down  = (__builtin_avr_swap(key_down) + key_down) & 0x07;
+        key_down--;
+        key_down -= ((key_down >> 1) & 0x55);
+        key_down  = ((key_down >> 2) & 0x33) + (key_down & 0x33);
+        key_down  = (__builtin_avr_swap(key_down) + key_down) & 0x07;
 
-    rb_put(&tm1638_key_rb, (uint8_t *) &key_down);
+        key_down += index << 4;
+
+        rb_put(&tm1638_key_rb, (uint8_t *) &key_down);
+    }
 #endif
 }
 
@@ -295,15 +307,22 @@ void TM1638_write_segments(void)
     }
 }
 
-/*
-      00 01 10 11
-    -  0  0  1  1
-      00 01 01 10
 
-    a -= ((a >> 1) & 0x55);                 // 4 2-bit fields 0-2
-    a  = ((a >> 2) & 0x33) + (a & 0x33);    // 2 4-bit fileds 0-4
-    a  = (__builtin_avr_swap(a) + a) & 0x07;// 1 4-bit fields 0-8
-*/
+/*
+ * TM1638_get_key, this call can be blocking or non-blocking
+ */
+int TM1638_get_key(void)
+{
+    char c;
+
+    if (-1 == rb_get(&tm1638_key_rb, (uint8_t *) &c))
+    {
+        return -1;
+    }
+
+    return c;
+}
+
 
 void TM1638_get_keys(struct tm1638_keypad * keys)
 {
@@ -359,6 +378,9 @@ static struct timer_event keys_update_event = {
 
 void TM1638_init(uint8_t const keys_update_ms)
 {
+    /**/
+    rb_init(&tm1638_key_rb, key_buffer, sizeof(key_buffer));
+
     /* initialize SPI interface */
     pinmap_set(PINMAP_MISO | PINMAP_SCK | PINMAP_MOSI | PINMAP_SS | TM1638_STB);
     pinmap_dir(PINMAP_MISO, PINMAP_SCK | PINMAP_MOSI | PINMAP_SS | TM1638_STB);

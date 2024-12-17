@@ -81,41 +81,22 @@ void set_rpm(uint16_t rpm)
 static void update_rpm(void)
 {
     /* process button pushes */
-    TM1638_get_keys(&keys);
-    uint32_t changed_buttons = keys.down;
+    int const k = TM1638_get_key();
+    int delta_rpm = 0;
 
-#if 0
-    if (0 != changed_buttons)
+    switch (k)
     {
-        printf("Button Down: %08lX\n", changed_buttons);
-    }
-#endif
-
-    if (0x00000004 & changed_buttons)
-    {
+    case 0x02:
         /* ON */
         TM1638_enable(1);
-    }
+        break;
 
-    if (0x00040000 & changed_buttons)
-    {
+    case 0x22:
         /* OFF */
         TM1638_enable(0);
-    }
+        break;
 
-    if (0x40000000 & changed_buttons)
-    {
-        /* dimmer */
-        if (brightness > 0)
-        {
-            brightness--;
-        }
-
-        TM1638_brightness(brightness);
-    }
-
-    if (0x00004000 & changed_buttons)
-    {
+    case 0x16:
         /* brighter */
         if (brightness < TM1638_MAX_BRIGHTNESS)
         {
@@ -123,87 +104,86 @@ static void update_rpm(void)
         }
 
         TM1638_brightness(brightness);
+        break;
+
+    case 0x36:
+        /* dimmer */
+        if (brightness > 0)
+        {
+            brightness--;
+        }
+
+        TM1638_brightness(brightness);
+        break;
+
+    case 0x01:
+        delta_rpm = 1000;
+        break;
+
+    case 0x05:
+        delta_rpm = 100;
+        break;
+
+    case 0x11:
+        delta_rpm = 10;
+        break;
+
+    case 0x15:
+        delta_rpm = 1;
+        break;
+
+    case 0x21:
+        delta_rpm = -1000;
+        break;
+
+    case 0x25:
+        delta_rpm = -100;
+        break;
+
+    case 0x31:
+        delta_rpm = -10;
+        break;
+
+    case 0x35:
+        delta_rpm = -1;
+        break;
     }
 
-    uint16_t new_rpm = rpm;
-
-    if     (0x22220000 & changed_buttons)
+    if      (0 > delta_rpm)
     {
-        /*
-         * down button pressed
-         */
-
-        if (0x00020000 & changed_buttons)
+        if      (rpm <= MIN_FAN_RPM)
         {
-            new_rpm = rpm - 1000;
+            rpm = 0;
         }
-
-        if (0x00200000 & changed_buttons)
+        else if ((rpm - MIN_FAN_RPM) < -delta_rpm)
         {
-            new_rpm = rpm - 100;
-        }
-
-        if (0x02000000 & changed_buttons)
-        {
-            new_rpm = rpm - 10;
-        }
-
-        if (0x20000000 & changed_buttons)
-        {
-            new_rpm = rpm - 1;
-        }
-
-        /*
-         * if adjusted RPM is less than minimum or underflowed
-         */
-        if ((new_rpm > rpm) || (new_rpm < MIN_FAN_RPM))
-        {
-            new_rpm = 0;
-        }
-    }
-    else if (0x00002222 & changed_buttons)
-    {
-        /*
-         * up button pressed
-         */
-
-        if (rpm == 0)
-        {
-            new_rpm = MIN_FAN_RPM;
+            rpm = MIN_FAN_RPM;
         }
         else
         {
-            if (0x00000002 & changed_buttons)
-            {
-                new_rpm = rpm + 1000;
-            }
+            rpm += delta_rpm;
+        }
 
-            if (0x00000020 & changed_buttons)
-            {
-                new_rpm = rpm + 100;
-            }
+        set_rpm(rpm);
+    }
+    else if (0 < delta_rpm)
+    {
+        if (0 == rpm)
+        {
+            rpm = MIN_FAN_RPM;
+        }
+        else
+        {
+            rpm += delta_rpm;
 
-            if (0x00000200 & changed_buttons)
+            if (rpm > MAX_FAN_RPM)
             {
-                new_rpm = rpm + 10;
-            }
-
-            if (0x00002000 & changed_buttons)
-            {
-                new_rpm = rpm + 1;
-            }
-
-            /*
-             * if adjusted RPM is greater than maximum or overflowed
-             */
-            if ((new_rpm < rpm) || (new_rpm > MAX_FAN_RPM))
-            {
-                new_rpm = MAX_FAN_RPM;
+                rpm = MAX_FAN_RPM;
             }
         }
-    }
 
-    rpm = new_rpm;
+        set_rpm(rpm);
+    }
 
     uint8_t dec[4] = { 0, 0, 0, 0 };
 
@@ -214,9 +194,8 @@ static void update_rpm(void)
     TM1638_write_digit(2, (n_digit > 2) ? dec[2] : -1);
     TM1638_write_digit(1, (n_digit > 1) ? dec[1] : -1);
     TM1638_write_digit(0, dec[0]);
-
-    set_rpm(rpm);
 }
+
 
 void fan_init(void)
 {

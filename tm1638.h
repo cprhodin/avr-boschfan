@@ -62,6 +62,7 @@ extern void TM1638_write_segments(void);
  * Read keys
  */
 extern void TM1638_read_keypad(void);
+extern int TM1638_get_key(void);
 extern void TM1638_get_keys(struct tm1638_keypad * keys);
 
 

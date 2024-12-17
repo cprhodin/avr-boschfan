@@ -19,6 +19,8 @@
 
 #include "pinmap.h"
 
+#define XXX 1
+
 #define UDIV_FLOOR(a,b) ((a) / (b))
 #define UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
 #define UDIV_CEILING(a,b) (((a) + (b) - 1) / (b))
