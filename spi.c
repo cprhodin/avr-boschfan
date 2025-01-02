@@ -23,82 +23,58 @@
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 
-#include "timer.h"
 #include "pinmap.h"
-#include "tm1638.h"
 
 
-#define TM1638_DELAY_US          (1)
-
-/* TM1638 commands                  */
-#define TM1638_CMD_DATA         0x40
-#define TM1638_CMD_ADDRESS      0xC0
-#define TM1638_CMD_DISPLAY      0x80
-
-/* TM1638 data command bitfields    */
-#define TM1638_DATA_WRITE       0x00
-#define TM1638_DATA_READ        0x02
-#define TM1638_DATA_INCR        0x00
-#define TM1638_DATA_FIXED       0x04
-
-/* TM1638 address command bitfields */
-#define TM1638_ADDRESS_MASK     0x0F
-
-/* TM1638 display command bitfields */
-#define TM1638_DISPLAY_BRIGHT   0x07
-#define TM1638_DISPLAY_ON       0x08
-
-
-/* command identifier */
-#define TM1638_IDLE              (0)
-#define TM1638_WRITE_CONFIG   _BV(0)
-#define TM1638_READ_KEYS      _BV(1)
-#define TM1638_WRITE_SEGMENTS _BV(2)
-
-
-/*
- * segments buffer for LED display
- */
-static uint8_t segments_buffer[16];
-
-/*
- * keys buffer for keyboard
- */
-static uint32_t keys_buffer = 0;
-
-/*
- * default to display off at 1/2 maximum brightness
- */
-static uint8_t _config = TM1638_CMD_DISPLAY
-                       | (TM1638_MAX_BRIGHTNESS / 2);
-
-/*
- * command state variables
- */
-static uint8_t pending_command = TM1638_IDLE;
-static uint8_t active_command = TM1638_IDLE;
-static uint8_t state;
-static uint8_t * data;
-
-
-static uint8_t   spi_action;
-static uint8_t   nxt_spi_action;
-static uint8_t   spi_data_cnt;
-static uint8_t * spi_data_ptr;
-
-
-extern void TM1638_command_dispatch(void);
-
-static void spi_command_dispatch(void)
-{
-    TM1638_command_dispatch();
-}
-
-
-extern void TM1638_spi_isr(void);
+void TM1638_spi_isr(void);
 
 ISR(SPI_STC_vect)
 {
     TM1638_spi_isr();
+}
+
+
+uint8_t spi_capture(void)
+{
+    uint8_t rc = 1;
+
+    /* capture the SPI interface */
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    {
+        if (0 == (GPIOR0 & SPI_EV_BUSY))
+        {
+            GPIOR0 |= SPI_EV_BUSY;
+
+            rc = 0;
+        }
+    }
+
+    return rc;
+}
+
+void spi_release(void)
+{
+    /* disable SPI interrupt */
+    SPCR &= ~_BV(SPIE);
+
+    /* disable SPI interface */
+    SPCR &= ~_BV(SPE);
+
+    GPIOR0 &= ~SPI_EV_BUSY;
+}
+
+
+void spi_init(void)
+{
+    /*
+     * initialize SPI interface pins
+     */
+    pinmap_set(PINMAP_MISO | MCP2515_INT | PINMAP_SCK | PINMAP_MOSI | TM1638_STB | MCP2515_CS);
+    pinmap_dir(PINMAP_MISO | MCP2515_INT, PINMAP_SCK | PINMAP_MOSI | TM1638_STB | MCP2515_CS);
+
+    /*
+     * initialize busy bit
+     */
+    GPIOR0 &= ~SPI_EV_BUSY;
 }
 

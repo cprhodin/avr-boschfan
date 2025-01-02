@@ -3,8 +3,8 @@
 TARGETS = avr-boschfan avr-boschfan.dump
 
 MANIFEST = Makefile project.h main.c console.h console.c timers.h timers.c     \
-           timer.h timer.c tick.h tick.c tm1638.h tm1638.c bibase.h bibase.c   \
-           pinmap.h
+           timer.h timer.c tick.h tick.c spi.h spi.c tm1638.h tm1638.c         \
+           mcp2515.h mcp2515.c bibase.h bibase.c pinmap.h
 
 # libraries
 LIBRARIES = librb/librb.a
@@ -18,8 +18,8 @@ DEPS_DIR = .depends
 AR = avr-ar
 ARFLAGS = cru
 CC = avr-gcc
-CFLAGS = -Wall -Wno-main -O2 -std=c99 -mmcu=atmega328p -D__AVR_ATmega328P__    \
-         -DF_CPU=\(16000000UL\) $(INCLUDES)
+CFLAGS = -Wall -Wno-main -Wno-array-bounds -O2 -std=c99 -mmcu=atmega328p       \
+         -D__AVR_ATmega328P__ -DF_CPU=\(16000000UL\) $(INCLUDES)
 CPPFLAGS = -MMD -MF $(DEPS_DIR)/$*.d
 LD = avr-ld
 LDFLAGS =
@@ -114,7 +114,7 @@ $(LIBS) : $(C_OBJS) $(LIBRARIES)
 	$(AR) $(ARFLAGS) $@ $^
 
 $(DUMPS) : $(APPS)
-	avr-objdump -t -d $< > $@
+	avr-objdump -t -d -z $< > $@
 
 $(C_OBJS) : | $(MANIFEST) $(L_C_HDRS) $(Y_C_HDRS) $(OBJS_DIR) $(DEPS_DIR)
 

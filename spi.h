@@ -33,5 +33,10 @@
 #define SPI_MSTR_LSB (_BV(SPE) | _BV(DORD) | _BV(MSTR))
 #define SPI_MSTR_MSB (_BV(SPE) | 0         | _BV(MSTR))
 
+
+extern uint8_t spi_capture(void);
+extern void spi_release(void);
+extern void spi_init(void);
+
 #endif /* !_SPI_H_ */
 

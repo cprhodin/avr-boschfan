@@ -21,8 +21,12 @@
 
 #include "spi.h"
 
-#define TM1638_SPCR ( (SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV32)       & 0xFF)
-#define TM1638_SPSR (((SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV32) >> 8) & 0xFF)
+/*
+ * LSb first, Master, Data changes on falling edge and latches
+ * on rising edge, CPU clock/16
+ */
+#define TM1638_SPCR ( (SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV16)       & 0xFF)
+#define TM1638_SPSR (((SPI_MSTR_LSB | SPI_MODE3 | SPI_DIV16) >> 8) & 0xFF)
 
 /*
  * Main Settings
@@ -50,7 +54,7 @@ extern void TM1638_init(uint8_t const keys_update_ms);
 /*
  * Configure display
  */
-extern void TM1638_enable(uint8_t const enable);
+extern void TM1638_led_enable(uint8_t const enable);
 extern void TM1638_brightness(uint8_t const brightness);
 
 /*
@@ -63,7 +67,6 @@ extern void TM1638_write_segments(void);
  */
 extern void TM1638_read_keypad(void);
 extern int TM1638_get_key(void);
-extern void TM1638_get_keys(struct tm1638_keypad * keys);
 
 
 /*

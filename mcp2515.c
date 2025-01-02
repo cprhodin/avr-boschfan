@@ -16,119 +16,261 @@
  */
 #include "project.h"
 
+#include <stdio.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/atomic.h>
+#include <avr/pgmspace.h>
+#include <util/delay.h>
 
-/* MCP2515 commands                     */
-#define MCP2515_CMD_RESET            0xC0
-#define MCP2515_CMD_READ             0x03
-#define MCP2515_CMD_READ_RX_BUFFER   0x90
-#define  MCP2515_RX_BUFFER_RXB0SIDH  0x00
-#define  MCP2515_RX_BUFFER_RXB0D0    0x02
-#define  MCP2515_RX_BUFFER_RXB1SIDH  0x04
-#define  MCP2515_RX_BUFFER_RXB1D0    0x06
-#define MCP2515_CMD_WRITE            0x02
-#define MCP2515_CMD_LOAD_TX_BUFFER   0x40
-#define  MCP2515_TX_BUFFER_TXB0SIDH  0x00
-#define  MCP2515_TX_BUFFER_TXB0D0    0x01
-#define  MCP2515_TX_BUFFER_TXB1SIDH  0x02
-#define  MCP2515_TX_BUFFER_TXB1D0    0x03
-#define  MCP2515_TX_BUFFER_TXB2SIDH  0x04
-#define  MCP2515_TX_BUFFER_TXB2D0    0x05
-#define MCP2515_CMD_RTS              0x80
-#define  MCP2515_TXB0                0x01
-#define  MCP2515_TXB1                0x02
-#define  MCP2515_TXB2                0x04
-#define MCP2515_CMD_READ_STATUS      0xA0
-#define MCP2515_CMD_RX_STATUS        0xB0
-#define MCP2515_CMD_BIT_MODIFY       0x05
-
-
-/* command identifier                   */
-#define MCP2515_IDLE                   (0)
-#define MCP2515_RESET               _BV(0)
-#define MCP2515_READ                _BV(1)
-#define MCP2515_READ_RX_BUFFER      _BV(2)
-#define MCP2515_WRITE               _BV(3)
-#define MCP2515_LOAD_TX_BUFFER      _BV(4)
-#define MCP2515_RTS                 _BV(5)
-#define MCP2515_READ_STATUS         _BV(6)
-#define MCP2515_RX_STATUS           _BV(7)
-#define MCP2515_BIT_MODIFY          _BV(8)
+#include "spi.h"
+#include "timer.h"
+#include "pinmap.h"
+#include "mcp2515.h"
 
 
 /*
  * command state variables
  */
-static uint8_t pending_command = MCP2515_IDLE;
-static uint8_t active_command = MCP2515_IDLE;
 
 
-static void MCP2515_command_dispatch(void)
+static uint8_t MCP2515_capture_spi(void)
 {
-    if (!(GPIOR0 & SPI_EV_BUSY))
-    {
-        /* update pending and active commands */
-        active_command = pending_command & -pending_command;
-        pending_command &= ~active_command;
-        state = 0;
+    uint8_t rc = 1;
 
-        if (MCP2515_IDLE != active_command)
+    /* capture the SPI interface */
+    rc = spi_capture();
+
+    if (0 == rc)
+    {
+        /*
+         * LSb first, Master, Data changes on falling edge and latches
+         * on rising edge, CPU clock/2
+         */
+        SPCR = MCP2515_SPCR;
+        SPSR = MCP2515_SPSR;
+
+        /* select the MCP2515 */
+        MCP2515_CS_LOW();
+    }
+
+    return rc;
+}
+
+static inline void MCP2515_release_spi(void)
+{
+    /* deselect the MCP2515 */
+    MCP2515_CS_HIGH();
+
+    /* disable SPI interface */
+    spi_release();
+}
+
+static void MCP2515_send_byte(uint8_t byte)
+{
+    SPDR = byte;
+
+    while (!(SPSR & _BV(SPIE)));
+}
+
+
+uint8_t MCP2515_reset(void)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_RESET);
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
+    }
+
+    return rc;
+}
+
+uint8_t MCP2515_rts(uint8_t const tx_buffer)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_RTS | (tx_buffer & 0x07));
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
+    }
+
+    return rc;
+}
+
+uint8_t MCP2515_read_status(uint8_t * data)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_READ_STATUS);
+
+        MCP2515_send_byte(0xFF);
+        *data = SPDR;
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
+    }
+
+    return rc;
+}
+
+uint8_t MCP2515_rx_status(uint8_t * data)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_RX_STATUS);
+
+        MCP2515_send_byte(0xFF);
+        *data = SPDR;
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
+    }
+
+    return rc;
+}
+
+
+uint8_t MCP2515_bit_modify(uint8_t const addr, uint8_t const mask, uint8_t const data)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_BIT_MODIFY);
+        MCP2515_send_byte(addr);
+        MCP2515_send_byte(mask);
+        MCP2515_send_byte(data);
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
+    }
+
+    return rc;
+}
+
+uint8_t MCP2515_read(uint8_t const addr, uint8_t * data, uint8_t size)
+{
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
+    {
+        MCP2515_send_byte(MCP2515_CMD_READ);
+        MCP2515_send_byte(addr);
+
+        while (0 != size--)
         {
-            GPIOR0 |= SPI_EV_BUSY;
-
-            _delay_us(MCP2515_DELAY_US);
-            MCP2515_STB_LOW();
-            _delay_us(MCP2515_DELAY_US);
-
-            switch (active_command)
-            {
-            case MCP2515_WRITE_CONFIG:
-                /* write the first byte */
-                SPDR = _config;
-                break;
-
-            case MCP2515_READ_KEYPAD:
-                /* write the first byte */
-                SPDR = MCP2515_CMD_DATA | MCP2515_DATA_READ | MCP2515_DATA_INCR;
-                break;
-
-            case MCP2515_WRITE_SEGMENTS:
-                /* write the first byte */
-                SPDR = MCP2515_CMD_DATA | MCP2515_DATA_WRITE | MCP2515_DATA_INCR;
-                break;
-            }
-
-            /* enable SPI interrupt */
-            SPCR |= _BV(SPIE);
+            MCP2515_send_byte(0xFF);
+            *data++ = SPDR;
         }
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
     }
+
+    return rc;
 }
 
-
-static void MCP2515_write_config(void)
+uint8_t MCP2515_write(uint8_t const addr, uint8_t const * data, uint8_t size)
 {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
     {
-        pending_command |= MCP2515_WRITE_CONFIG;
-        MCP2515_command_dispatch();
+        MCP2515_send_byte(MCP2515_CMD_WRITE);
+        MCP2515_send_byte(addr);
+
+        while (0 != size--)
+        {
+            MCP2515_send_byte(*data++);
+        }
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
     }
+
+    return rc;
 }
 
-void MCP2515_read_keypad(void)
+uint8_t MCP2515_read_rx_buffer(uint8_t const rx_addr, uint8_t * data, uint8_t size)
 {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
     {
-        pending_command |= MCP2515_READ_KEYPAD;
-        MCP2515_command_dispatch();
+        MCP2515_send_byte(MCP2515_CMD_READ_RX_BUFFER | (rx_addr & 0x06));
+
+        while (0 != size--)
+        {
+            MCP2515_send_byte(0xFF);
+            *data++ = SPDR;
+        }
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
     }
+
+    return rc;
 }
 
-void MCP2515_write_segments(void)
+uint8_t MCP2515_load_tx_buffer(uint8_t const tx_addr, uint8_t const * data, uint8_t size)
 {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+    uint8_t rc;
+
+    rc = MCP2515_capture_spi();
+
+    if (0 == rc)
     {
-        pending_command |= MCP2515_WRITE_SEGMENTS;
-        MCP2515_command_dispatch();
+        MCP2515_send_byte(MCP2515_CMD_LOAD_TX_BUFFER | (tx_addr & 0x07));
+
+        while (0 != size--)
+        {
+            MCP2515_send_byte(*data++);
+        }
+
+        /* release the SPI interface */
+        MCP2515_release_spi();
     }
+
+    return rc;
 }
 
+
+void MCP2515_init(void)
+{
+    uint8_t rc;
+
+    /* reset MCP2515 */
+    do
+    {
+        rc = MCP2515_reset();
+    }
+    while (0 != rc);
+}
 

@@ -26,7 +26,9 @@
 
 #include "timer.h"
 #include "tick.h"
+#include "spi.h"
 #include "tm1638.h"
+#include "mcp2515.h"
 #include "bibase.h"
 
 #define BUILD_DATE __DATE__ ", " __TIME__
@@ -43,9 +45,6 @@
 static uint16_t rpm = MAX_FAN_RPM;
 
 static uint8_t brightness = TM1638_MAX_BRIGHTNESS / 2;
-
-
-static struct tm1638_keypad keys = { 0 };
 
 
 void set_rpm(uint16_t rpm)
@@ -88,12 +87,12 @@ static void update_rpm(void)
     {
     case 0x02:
         /* ON */
-        TM1638_enable(1);
+        TM1638_led_enable(1);
         break;
 
     case 0x22:
         /* OFF */
-        TM1638_enable(0);
+        TM1638_led_enable(0);
         break;
 
     case 0x16:
@@ -229,9 +228,15 @@ void main(void)
     printf("avr-boschfan, Bosch radiator fan controller.\n");
     printf("Build date: " BUILD_DATE "\n\n");
 
+    /* initialize SPI interface */
+    spi_init();
+
     /* initialize and enable the TM1638 */
     TM1638_init(10);
-    TM1638_enable(1);
+    TM1638_led_enable(1);
+
+    /* initialize and enable the MCP2515 */
+    MCP2515_init();
 
     for (;;)
     {

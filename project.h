@@ -19,8 +19,6 @@
 
 #include "pinmap.h"
 
-#define XXX 1
-
 #define UDIV_FLOOR(a,b) ((a) / (b))
 #define UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
 #define UDIV_CEILING(a,b) (((a) + (b) - 1) / (b))
@@ -66,6 +64,13 @@
 #define TM1638_STB_HIGH()   pinmap_set(TM1638_STB)
 #define TM1638_STB_LOW()    pinmap_clear(TM1638_STB)
 
+/* MCP2515 pins */
+#define MCP2515_CS  PINMAP_D10
+#define MCP2515_INT PINMAP_D2
+
+#define MCP2515_CS_HIGH()   pinmap_set(MCP2515_CS)
+#define MCP2515_CS_LOW()    pinmap_clear(MCP2515_CS)
+
 /* Fan PWM output */
 #define FAN_OUT PINMAP_OC1A
 
@@ -82,6 +87,9 @@
 #define TBTIMER_COMP A
 
 
+/*
+ * pulse output timer
+ */
 #define TIMER1_PRESCALER (8UL)
 
 
